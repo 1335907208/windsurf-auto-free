@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # Windsurf Auto Free
 
@@ -12,7 +12,7 @@
 [![](https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python)](https://python.org/)
 [![](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
-[中文](./README.md) | [English](./README.en.md)
+ [中文](./README.md) | [English](./README.en.md)
 
 </div>
 
