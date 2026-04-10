@@ -1,0 +1,24 @@
+{
+  "name": "windsurf-auto-free",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter './apps/*' dev",
+    "build": "pnpm --filter './apps/*' build && pnpm --filter './packages/*' build",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "clean": "pnpm --filter './apps/*' clean && pnpm --filter './packages/*' clean"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.23.0",
+    "@typescript-eslint/eslint-plugin": "^8.27.0",
+    "@typescript-eslint/parser": "^8.27.0",
+    "eslint": "^9.23.0",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

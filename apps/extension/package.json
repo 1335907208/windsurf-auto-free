@@ -1,0 +1,69 @@
+{
+  "name": "ide-toolkit",
+  "displayName": "IDE Toolkit",
+  "description": "Development environment utilities",
+  "version": "1.0.0",
+  "publisher": "dev-utils",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ide-toolkit.openPanel",
+        "title": "Open Account Manager",
+        "icon": "$(person)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ide-toolkit",
+          "title": "Account Manager",
+          "icon": "$(person)"
+        }
+      ]
+    },
+    "views": {
+      "ide-toolkit": [
+        {
+          "id": "ide-toolkit.welcome",
+          "name": "Account Manager",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "IDE Account Manager",
+      "properties": {
+        "ideToolkit.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:3001",
+          "description": "Backend API URL for account management"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "echo done",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build:zh": "node scripts/build.js zh",
+    "build:en": "node scripts/build.js en",
+    "package:zh": "node scripts/package.js zh ide-toolkit-zh.vsix",
+    "package:en": "node scripts/package.js en ide-toolkit-en.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^2.26.1",
+    "typescript": "^5.0.0"
+  }
+}

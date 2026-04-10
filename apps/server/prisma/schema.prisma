@@ -1,0 +1,44 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model EmailHistory {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  provider    String   // 'mailtm' or 'guerrilla'
+  password    String?  // For Mail.tm
+  sidToken    String?  // For Guerrilla Mail
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+  emails      EmailMessage[]
+}
+
+model EmailMessage {
+  id           String   @id @default(cuid())
+  emailHistoryId String
+  emailHistory   EmailHistory @relation(fields: [emailHistoryId], references: [id], onDelete: Cascade)
+  messageId    String   @unique // External message ID
+  from         String
+  fromName     String?
+  subject      String
+  body         String?
+  text         String?
+  codes        String?  // JSON array of extracted codes
+  receivedAt   DateTime @default(now())
+}
+
+model WindsurfAccount {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  password    String?
+  apiKey      String?  // Firebase token obtained after registration
+  status      String   // pending, registering, success, failed
+  registerAt  DateTime @default(now())
+  errorMsg    String?
+  tempEmailId String?  // 关联临时邮箱
+}
