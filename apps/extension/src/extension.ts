@@ -7,7 +7,7 @@ import * as crypto from 'crypto';
 interface AccountInfo {
     id: string;
     email: string;
-    password: string;
+    password?: string;
     name?: string;
     apiKey?: string;
     accessToken?: string;
@@ -75,6 +75,8 @@ class SidebarProvider implements vscode.WebviewViewProvider {
                 await this.clearUsedStatus();
             } else if (message.command === 'getStats') {
                 await this.updateStats();
+            } else if (message.command === 'importAccounts') {
+                await this.handleImportAccounts();
             }
         });
     }
@@ -274,6 +276,8 @@ body {
         </div>
     </div>
     <button class="btn btn-danger" onclick="clearUsedStatus()" style="width:100%;">清空全部“已使用”标记</button>
+    <div class="divider" style="margin: 12px 0;"></div>
+    <button class="btn btn-primary" onclick="importAccounts()" style="width:100%;">导入账号(可从前端导出成功账号)</button>
 </div>
 
 <script>
@@ -303,6 +307,10 @@ function clearUsedStatus() {
     }
 }
 
+function importAccounts() {
+    vscode.postMessage({ command: 'importAccounts' });
+}
+
 function showStatus(msg, type) {
     const status = document.getElementById('status');
     status.textContent = msg;
@@ -325,7 +333,9 @@ window.addEventListener('message', event => {
     } else if (message.command === 'configSaved') {
         showStatus('配置已保存！', 'success');
     } else if (message.command === 'usedStatusCleared') {
-        showStatus('“已使用”标记已清空！', 'success');
+        showStatus('"Used" status cleared!', 'success');
+    } else if (message.command === 'importResult') {
+        showStatus(message.message, message.success ? 'success' : 'error');
     }
 });
 
@@ -419,6 +429,76 @@ vscode.postMessage({ command: 'getStats' });
             total: total,
             used: Math.floor(used)
         });
+    }
+
+    private async handleImportAccounts() {
+        // Open file picker
+        const uris = await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            filters: { 'Text Files': ['txt'] },
+            title: 'Select account file (format: email:password)'
+        });
+
+        if (!uris || uris.length === 0) return;
+
+        const fileUri = uris[0];
+        const content = await vscode.workspace.fs.readFile(fileUri);
+        const text = Buffer.from(content).toString('utf-8');
+
+        // Parse accounts (format: email:password per line)
+        const lines = text.split(/\r?\n/).filter((line: string) => line.trim());
+        const importAccounts: AccountInfo[] = [];
+
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            const [email, ...passwordParts] = trimmed.split(':');
+            if (email && email.includes('@')) {
+                const pwd = passwordParts.join(':').trim();
+                importAccounts.push({
+                    id: crypto.randomUUID(),
+                    email: email.trim(),
+                    password: pwd || undefined,
+                    name: email.trim().split('@')[0]
+                });
+            }
+        }
+
+        if (importAccounts.length === 0) {
+            this._view?.webview.postMessage({
+                command: 'importResult',
+                success: false,
+                message: 'No valid accounts found (format: email:password)'
+            });
+            return;
+        }
+
+        // Get existing cached accounts
+        const cachedAccounts = this.context.globalState.get<AccountInfo[]>('ide-toolkit.cachedAccounts') || [];
+        let imported = 0;
+        let skipped = 0;
+
+        for (const acc of importAccounts) {
+            // Check if already exists
+            const exists = cachedAccounts.some(c => c.email === acc.email);
+            if (exists) {
+                skipped++;
+                continue;
+            }
+            cachedAccounts.push(acc);
+            imported++;
+        }
+
+        // Save to cache
+        await this.context.globalState.update('ide-toolkit.cachedAccounts', cachedAccounts);
+
+        this._view?.webview.postMessage({
+            command: 'importResult',
+            success: true,
+            message: `Imported: ${imported}, skipped (duplicates): ${skipped}`
+        });
+
+        await this.updateStats();
     }
 }
 
@@ -787,6 +867,7 @@ class AccountViewProvider implements vscode.WebviewViewProvider {
         <button class="btn btn-secondary" id="refreshDeviceBtn">刷新设备ID</button>
         <button class="btn btn-primary" id="refreshBtn">刷新</button>
         <button class="btn btn-secondary" id="toggleAddBtn">添加账号</button>
+        <button class="btn btn-secondary" id="importBtn">导入账号</button>
     </div>
     
     <div id="addAccountForm" class="collapsible-content" style="margin-bottom: 12px;">
@@ -827,6 +908,11 @@ class AccountViewProvider implements vscode.WebviewViewProvider {
         document.getElementById('toggleAddBtn').addEventListener('click', () => {
             const form = document.getElementById('addAccountForm');
             form.classList.toggle('open');
+        });
+
+        // Import accounts
+        document.getElementById('importBtn').addEventListener('click', () => {
+            vscode.postMessage({ command: 'importAccounts' });
         });
 
         // Add account
@@ -1022,6 +1108,9 @@ function openWebviewPanel(context: vscode.ExtensionContext) {
                 case 'refreshDevice':
                     await refreshDevice(context);
                     break;
+                case 'importAccounts':
+                    await handleImportAccountsMain(context);
+                    break;
                 case 'getAccounts':
                 case 'refreshAccounts':
                     // Fetch from backend
@@ -1173,6 +1262,7 @@ function getWebviewContent(accounts: AccountInfo[]): string {
             <button class="btn btn-secondary" id="refreshDeviceBtn">刷新设备ID</button>
             <button class="btn btn-primary" id="refreshBtn">刷新</button>
             <button class="btn btn-secondary" id="addBtn">添加账号</button>
+            <button class="btn btn-secondary" id="importBtn">导入账号</button>
         </div>
     </div>
     
@@ -1248,6 +1338,11 @@ function getWebviewContent(accounts: AccountInfo[]): string {
             document.getElementById('modalEmail').focus();
         });
         
+        // Import accounts
+        document.getElementById('importBtn').addEventListener('click', () => {
+            vscode.postMessage({ command: 'importAccounts' });
+        });
+        
         document.getElementById('modalAddBtn').addEventListener('click', () => {
             const email = document.getElementById('modalEmail').value.trim();
             const password = document.getElementById('modalPassword').value;
@@ -1302,6 +1397,12 @@ function getWebviewContent(accounts: AccountInfo[]): string {
                     break;
                 case 'deviceRefreshed':
                     showStatus('设备ID已刷新', 'success');
+                    break;
+                case 'importResult':
+                    showStatus(message.message, message.success ? 'success' : 'error');
+                    if (message.success) {
+                        vscode.postMessage({ command: 'getAccounts' });
+                    }
                     break;
             }
         });
@@ -1418,6 +1519,74 @@ async function handleRemoveAccount(context: vscode.ExtensionContext, accountId: 
 
     currentPanel?.webview.postMessage({
         command: 'accountRemoved'
+    });
+}
+
+async function handleImportAccountsMain(context: vscode.ExtensionContext) {
+    // Open file picker
+    const uris = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        filters: { 'Text Files': ['txt'] },
+        title: 'Select account file (format: email:password)'
+    });
+
+    if (!uris || uris.length === 0) return;
+
+    const fileUri = uris[0];
+    const content = await vscode.workspace.fs.readFile(fileUri);
+    const text = Buffer.from(content).toString('utf-8');
+
+    // Parse accounts (format: email:password per line)
+    const lines = text.split(/\r?\n/).filter((line: string) => line.trim());
+    const importAccounts: AccountInfo[] = [];
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const [email, ...passwordParts] = trimmed.split(':');
+        if (email && email.includes('@')) {
+            const pwd = passwordParts.join(':').trim();
+            importAccounts.push({
+                id: crypto.randomUUID(),
+                email: email.trim(),
+                password: pwd || undefined,
+                name: email.trim().split('@')[0]
+            });
+        }
+    }
+
+    if (importAccounts.length === 0) {
+        currentPanel?.webview.postMessage({
+            command: 'importResult',
+            success: false,
+            message: 'No valid accounts found (format: email:password)'
+        });
+        return;
+    }
+
+    // Get existing cached accounts
+    const cachedAccounts = context.globalState.get<AccountInfo[]>('ide-toolkit.cachedAccounts') || [];
+    let imported = 0;
+    let skipped = 0;
+
+    for (const acc of importAccounts) {
+        // Check if already exists
+        const exists = cachedAccounts.some(c => c.email === acc.email);
+        if (exists) {
+            skipped++;
+            continue;
+        }
+        cachedAccounts.push(acc);
+        imported++;
+    }
+
+    // Save to cache
+    await context.globalState.update('ide-toolkit.cachedAccounts', cachedAccounts);
+
+    currentPanel?.webview.postMessage({
+        command: 'importResult',
+        success: true,
+        message: `Imported: ${imported}, skipped (duplicates): ${skipped}`
     });
 }
 

@@ -41,4 +41,5 @@ coverage/
 apps/server/prisma/*.db
 apps/server/prisma/*.db-journal
 
-# windsurf-account-switcher
+apps/extension/dist/
+*.vsix
