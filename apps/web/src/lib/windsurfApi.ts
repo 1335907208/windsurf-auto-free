@@ -4,6 +4,7 @@ export interface WindsurfAccount {
   id: string
   email: string
   password?: string
+  apiKey?: string
   status: string
   registerAt: string
   errorMsg?: string

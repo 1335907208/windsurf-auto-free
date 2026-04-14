@@ -20,6 +20,14 @@
         "command": "ide-toolkit.openPanel",
         "title": "打开账号管理器",
         "icon": "$(person)"
+      },
+      {
+        "command": "ide-toolkit.refreshDevice",
+        "title": "Refresh Device ID"
+      },
+      {
+        "command": "ide-toolkit.patchWindsurf",
+        "title": "Patch Windsurf Extension"
       }
     ],
     "viewsContainers": {

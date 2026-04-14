@@ -38,6 +38,11 @@ export function activate(context: vscode.ExtensionContext) {
     // Load saved accounts
     loadAccounts(context);
 
+    // Auto apply Windsurf patch on activate (like CodePool)
+    applyWindsurfPatch(context, true).catch(err => {
+        console.error('[WindsurfPatch] Auto patch failed:', err);
+    });
+
     // Register WebviewViewProvider for sidebar icon
     const provider = new SidebarProvider(context);
     context.subscriptions.push(
@@ -47,8 +52,117 @@ export function activate(context: vscode.ExtensionContext) {
     // Register command to open panel
     context.subscriptions.push(
         vscode.commands.registerCommand('ide-toolkit.openPanel', () => openWebviewPanel(context)),
-        vscode.commands.registerCommand('ide-toolkit.refreshDevice', () => refreshDevice(context))
+        vscode.commands.registerCommand('ide-toolkit.refreshDevice', () => refreshDevice(context)),
+        vscode.commands.registerCommand('ide-toolkit.patchWindsurf', async () => {
+            const patched = await applyWindsurfPatch(context, true);
+            if (patched) {
+                const action = await vscode.window.showInformationMessage('Windsurf 扩展补丁已应用，需要重启窗口生效。', '重启窗口');
+                if (action === '重启窗口') {
+                    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+                }
+            } else {
+                vscode.window.showInformationMessage('Windsurf 扩展无需修改（可能已打过补丁或未找到扩展文件）。');
+            }
+        })
     );
+}
+
+const WINDSURF_HOOK_START = '/*__CODEPOOL_HOOK_START__*/';
+const WINDSURF_HOOK_END = '/*__CODEPOOL_HOOK_END__*/';
+
+function getWindsurfExtensionFilepath(): string | null {
+    // Same as codepool: use vscode.env.appRoot
+    const appRoot = (vscode as any).env?.appRoot;
+    if (!appRoot) {
+        console.warn('[WindsurfPatch] vscode.env.appRoot not available');
+        return null;
+    }
+    
+    const candidate = path.join(appRoot, 'extensions', 'windsurf', 'dist', 'extension.js');
+    if (fs.existsSync(candidate)) {
+        return candidate;
+    }
+    
+    console.warn('[WindsurfPatch] Windsurf extension not found at:', candidate);
+    return null;
+}
+
+function readWindsurfHookCode(context: vscode.ExtensionContext): string | null {
+    try {
+        const hookPath = path.join(context.extensionPath, 'hook_code.js');
+        if (!fs.existsSync(hookPath)) return null;
+        let code = fs.readFileSync(hookPath, 'utf-8');
+        code = code.replace(WINDSURF_HOOK_START, '').replace(WINDSURF_HOOK_END, '');
+        return code;
+    } catch (e: any) {
+        console.error('[WindsurfPatch] 读取 hook_code.js 失败:', e?.message || String(e));
+        return null;
+    }
+}
+
+async function applyWindsurfPatch(context: vscode.ExtensionContext, injectIfMissing: boolean): Promise<boolean> {
+    const windsurfPath = getWindsurfExtensionFilepath();
+    if (!windsurfPath) {
+        console.warn('[WindsurfPatch] 未找到 windsurf 扩展文件，跳过');
+        return false;
+    }
+
+    const hookCode = readWindsurfHookCode(context);
+    if (!hookCode) {
+        console.warn('[WindsurfPatch] 未找到 hook_code.js，跳过');
+        return false;
+    }
+
+    let src: string;
+    try {
+        src = fs.readFileSync(windsurfPath, 'utf-8');
+    } catch (e: any) {
+        console.error('[WindsurfPatch] 读取失败:', e?.message || String(e));
+        return false;
+    }
+
+    let changed = false;
+
+    if (src.includes(WINDSURF_HOOK_START) && src.includes(WINDSURF_HOOK_END)) {
+        const startIdx = src.indexOf(WINDSURF_HOOK_START);
+        const endIdx = src.indexOf(WINDSURF_HOOK_END, startIdx + WINDSURF_HOOK_START.length);
+        if (endIdx > startIdx) {
+            const existing = src.slice(startIdx + WINDSURF_HOOK_START.length, endIdx);
+            if (existing !== hookCode) {
+                src = src.slice(0, startIdx + WINDSURF_HOOK_START.length) + hookCode + src.slice(endIdx);
+                changed = true;
+                console.log('[WindsurfPatch] 已更新 hook 代码');
+            }
+        }
+    } else if (injectIfMissing) {
+        src = `${WINDSURF_HOOK_START}${hookCode}${WINDSURF_HOOK_END}` + src;
+        changed = true;
+        console.log('[WindsurfPatch] 已注入 hook 代码到文件开头');
+    }
+
+    // Make loginWithAuthToken accept external token: if arg provided -> handleAuthToken(arg)
+    const loginHandlerRegex = /\.LOGIN_WITH_AUTH_TOKEN,(\(\))?\(\)=>\{(\w+)\.provideAuthToken/;
+    if (loginHandlerRegex.test(src)) {
+        src = src.replace(loginHandlerRegex, '.LOGIN_WITH_AUTH_TOKEN,$1(acc)=>{acc?$2.handleAuthToken(acc):$2.provideAuthToken');
+        changed = true;
+        console.log('[WindsurfPatch] 已修改 LOGIN_WITH_AUTH_TOKEN 处理器');
+    }
+
+    if (!changed) return false;
+
+    try {
+        fs.writeFileSync(windsurfPath, src, 'utf-8');
+        return true;
+    } catch {
+        try {
+            fs.chmodSync(windsurfPath, 0o644);
+            fs.writeFileSync(windsurfPath, src, 'utf-8');
+            return true;
+        } catch (e: any) {
+            console.error('[WindsurfPatch] 写入失败:', e?.message || String(e));
+            return false;
+        }
+    }
 }
 
 // Sidebar provider - shows a button to open the main panel
@@ -77,6 +191,8 @@ class SidebarProvider implements vscode.WebviewViewProvider {
                 await this.updateStats();
             } else if (message.command === 'importAccounts') {
                 await this.handleImportAccounts();
+            } else if (message.command === 'clearAllAccounts') {
+                await this.clearAllAccounts();
             }
         });
     }
@@ -276,6 +392,7 @@ body {
         </div>
     </div>
     <button class="btn btn-danger" onclick="clearUsedStatus()" style="width:100%;">清空全部“已使用”标记</button>
+    <button class="btn btn-danger" onclick="clearAllAccounts()" style="width:100%;margin-top:8px;">清空全部账号</button>
     <div class="divider" style="margin: 12px 0;"></div>
     <button class="btn btn-primary" onclick="importAccounts()" style="width:100%;">导入账号(可从前端导出成功账号)</button>
 </div>
@@ -301,14 +418,15 @@ function saveConfig() {
 }
 
 function clearUsedStatus() {
-    if (confirm('确定清空全部“已使用”标记吗？这会把所有账号重新标记为未使用。')) {
-        vscode.postMessage({ command: 'clearUsedStatus' });
-        showStatus('“已使用”标记已清空！', 'success');
-    }
+    vscode.postMessage({ command: 'clearUsedStatus' });
 }
 
 function importAccounts() {
     vscode.postMessage({ command: 'importAccounts' });
+}
+
+function clearAllAccounts() {
+    vscode.postMessage({ command: 'clearAllAccounts' });
 }
 
 function showStatus(msg, type) {
@@ -336,6 +454,8 @@ window.addEventListener('message', event => {
         showStatus('"Used" status cleared!', 'success');
     } else if (message.command === 'importResult') {
         showStatus(message.message, message.success ? 'success' : 'error');
+    } else if (message.command === 'accountsCleared') {
+        showStatus('账号已清空！', 'success');
     }
 });
 
@@ -414,14 +534,50 @@ vscode.postMessage({ command: 'getStats' });
     }
 
     private async clearUsedStatus() {
+        const confirm = await vscode.window.showWarningMessage(
+            '确定清空全部“已使用”标记吗？',
+            { modal: true },
+            '确定'
+        );
+        if (confirm !== '确定') return;
+
         await this.context.globalState.update('ide-toolkit.usedAccounts', {});
         this._view?.webview.postMessage({ command: 'usedStatusCleared' });
         await this.updateStats();
     }
 
+    private async clearAllAccounts() {
+        const confirm = await vscode.window.showWarningMessage(
+            '确定清空全部账号吗？这会删除所有本地缓存的账号数据。',
+            { modal: true },
+            '确定'
+        );
+        if (confirm !== '确定') return;
+
+        await this.context.globalState.update('ide-toolkit.cachedAccounts', []);
+        await this.context.globalState.update('ide-toolkit.usedAccounts', {});
+        this._view?.webview.postMessage({ command: 'accountsCleared' });
+        await this.updateStats();
+    }
+
     private async updateStats() {
         const usedAccounts = this.context.globalState.get<Record<string, boolean>>('ide-toolkit.usedAccounts') || {};
-        const allAccounts = this.context.globalState.get<AccountInfo[]>('ide-toolkit.cachedAccounts') || [];
+        let allAccounts = this.context.globalState.get<AccountInfo[]>('ide-toolkit.cachedAccounts') || [];
+
+        // If local cache is empty, try to fetch from backend
+        if (allAccounts.length === 0) {
+            try {
+                const result = await fetchFromBackend('/api/windsurf/accounts');
+                if (result.success && result.data && result.data.length > 0) {
+                    allAccounts = result.data;
+                    // Update cache
+                    await this.context.globalState.update('ide-toolkit.cachedAccounts', allAccounts);
+                }
+            } catch (e) {
+                console.error('Failed to fetch accounts from backend:', e);
+            }
+        }
+
         const total = allAccounts.length;
         const used = Object.keys(usedAccounts).length / 2; // Divide by 2 since we store both id and email
         this._view?.webview.postMessage({
@@ -445,21 +601,28 @@ vscode.postMessage({ command: 'getStats' });
         const content = await vscode.workspace.fs.readFile(fileUri);
         const text = Buffer.from(content).toString('utf-8');
 
-        // Parse accounts (format: email:password per line)
+        // Parse accounts (format: email:password or email:password:apiKey per line)
         const lines = text.split(/\r?\n/).filter((line: string) => line.trim());
         const importAccounts: AccountInfo[] = [];
 
         for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed) continue;
-            const [email, ...passwordParts] = trimmed.split(':');
+            const parts = trimmed.split(':');
+            const email = parts[0]?.trim();
             if (email && email.includes('@')) {
-                const pwd = passwordParts.join(':').trim();
+                let password = parts[1]?.trim();
+                // Remove trailing colons from password (in case of malformed export)
+                while (password && password.endsWith(':')) {
+                    password = password.slice(0, -1).trim();
+                }
+                const apiKey = parts[2]?.trim();
                 importAccounts.push({
                     id: crypto.randomUUID(),
-                    email: email.trim(),
-                    password: pwd || undefined,
-                    name: email.trim().split('@')[0]
+                    email: email,
+                    password: password || undefined,
+                    apiKey: apiKey || undefined,
+                    name: email.split('@')[0]
                 });
             }
         }
@@ -1536,21 +1699,28 @@ async function handleImportAccountsMain(context: vscode.ExtensionContext) {
     const content = await vscode.workspace.fs.readFile(fileUri);
     const text = Buffer.from(content).toString('utf-8');
 
-    // Parse accounts (format: email:password per line)
+    // Parse accounts (format: email:password or email:password:apiKey per line)
     const lines = text.split(/\r?\n/).filter((line: string) => line.trim());
     const importAccounts: AccountInfo[] = [];
 
     for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        const [email, ...passwordParts] = trimmed.split(':');
+        const parts = trimmed.split(':');
+        const email = parts[0]?.trim();
         if (email && email.includes('@')) {
-            const pwd = passwordParts.join(':').trim();
+            let password = parts[1]?.trim();
+            // Remove trailing colons from password (in case of malformed export)
+            while (password && password.endsWith(':')) {
+                password = password.slice(0, -1).trim();
+            }
+            const apiKey = parts[2]?.trim();
             importAccounts.push({
                 id: crypto.randomUUID(),
-                email: email.trim(),
-                password: pwd || undefined,
-                name: email.trim().split('@')[0]
+                email: email,
+                password: password || undefined,
+                apiKey: apiKey || undefined,
+                name: email.split('@')[0]
             });
         }
     }
@@ -1649,10 +1819,16 @@ async function handleSwitchAccount(context: vscode.ExtensionContext, accountId: 
 
 async function handleSwitchAccountWithEmail(context: vscode.ExtensionContext, email: string, password: string): Promise<{ success: boolean; error?: string; email?: string }> {
     try {
+        // Debug: log email and password length
+        console.log('[Switch] Firebase login attempt:');
+        console.log('[Switch]   email:', email);
+        console.log('[Switch]   password length:', password?.length);
+        console.log('[Switch]   password:', password);
+        
         // Step 1: Firebase login, get idToken
         const result = await loginWithFirebase(email, password);
         if (!result.idToken) {
-            throw new Error(`Firebase 登录失败：${result.error || '未知错误'}`);
+            throw new Error(`Firebase login failed: ${result.error || 'Unknown error'}`);
         }
         const idToken = result.idToken;
         console.log('[Switch] Firebase login success, token length:', idToken.length);
@@ -2104,33 +2280,36 @@ async function loginWithEmailPassword(email: string, password: string): Promise<
 
 async function refreshDevice(context: vscode.ExtensionContext) {
     try {
-        // Generate new device ID
-        const newDeviceId = crypto.randomUUID();
-        
-        // Find Windsurf's storage.json
-        const appDataPath = process.env.APPDATA || process.env.HOME || '';
-        const possiblePaths = [
-            path.join(appDataPath, 'Windsurf', 'User', 'globalStorage', 'storage.json'),
-            path.join(appDataPath, '.windsurf', 'User', 'globalStorage', 'storage.json'),
-        ];
-
-        let storagePath: string | undefined;
-        for (const p of possiblePaths) {
-            if (fs.existsSync(p)) {
-                storagePath = p;
-                break;
-            }
+        const windsurfPath = getWindsurfExtensionFilepath();
+        if (!windsurfPath) {
+            vscode.window.showErrorMessage('未找到 windsurf 扩展文件，无法刷新设备码');
+            return;
         }
 
-        if (storagePath && fs.existsSync(storagePath)) {
-            const storage = JSON.parse(fs.readFileSync(storagePath, 'utf-8'));
-            storage.deviceId = newDeviceId;
-            fs.writeFileSync(storagePath, JSON.stringify(storage, null, 2));
+        let src = fs.readFileSync(windsurfPath, 'utf-8');
+
+        // codepool: replace generateFingerprint implementation to return a new random fingerprint
+        const fingerprint = crypto.randomBytes(64).toString('hex'); // 128 hex chars
+        const re = /(generateFingerprint=async\s+function\(\)\{)[\s\S\n]*?return[^}]+/;
+        if (!re.test(src)) {
+            vscode.window.showErrorMessage('未找到 generateFingerprint，无法刷新设备码（windsurf 版本可能不匹配）');
+            return;
         }
 
-        currentPanel?.webview.postMessage({
-            command: 'deviceRefreshed'
-        });
+        src = src.replace(re, `$1return "${fingerprint}"`);
+
+        try {
+            fs.writeFileSync(windsurfPath, src, 'utf-8');
+        } catch {
+            fs.chmodSync(windsurfPath, 0o644);
+            fs.writeFileSync(windsurfPath, src, 'utf-8');
+        }
+
+        currentPanel?.webview.postMessage({ command: 'deviceRefreshed' });
+        const action = await vscode.window.showInformationMessage('设备码已刷新，需要重启窗口生效。', '重启窗口');
+        if (action === '重启窗口') {
+            await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        }
     } catch (error: any) {
         currentPanel?.webview.postMessage({
             command: 'switchError',
