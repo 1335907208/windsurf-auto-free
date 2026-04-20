@@ -140,13 +140,22 @@ async function applyWindsurfPatch(context: vscode.ExtensionContext, injectIfMiss
         console.log('[WindsurfPatch] 已注入 hook 代码到文件开头');
     }
 
-    // Make loginWithAuthToken accept external token: if arg provided -> handleAuthToken(arg)
-    const loginHandlerRegex = /\.LOGIN_WITH_AUTH_TOKEN,(\(\))?\(\)=>\{(\w+)\.provideAuthToken/;
+    // Patch 1: LOGIN_WITH_AUTH_TOKEN handler - use getInstance()
+    const loginHandlerRegex = /\.LOGIN_WITH_AUTH_TOKEN,\([^)]*\)=>\{[^}]+\}/;
+    const correctHandler = '.LOGIN_WITH_AUTH_TOKEN,(acc)=>{const w=f.WindsurfAuthProvider.getInstance();acc?w.handleAuthToken(acc):w.provideAuthToken()}';
+    
     if (loginHandlerRegex.test(src)) {
-        src = src.replace(loginHandlerRegex, '.LOGIN_WITH_AUTH_TOKEN,$1(acc)=>{acc?$2.handleAuthToken(acc):$2.provideAuthToken');
-        changed = true;
-        console.log('[WindsurfPatch] 已修改 LOGIN_WITH_AUTH_TOKEN 处理器');
+        const original = src.match(loginHandlerRegex)?.[0];
+        if (original !== correctHandler) {
+            src = src.replace(loginHandlerRegex, correctHandler);
+            changed = true;
+            console.log('[WindsurfPatch] 已更新 LOGIN_WITH_AUTH_TOKEN 处理器');
+        }
     }
+
+    // Patch 2: handleAuthToken function - for auth1 tokens, just pass through to let extension handle it
+    // The extension will fail with registerUser, but we've tried our best
+    // Real solution requires Windsurf official support for auth1 tokens
 
     if (!changed) return false;
 
@@ -1824,17 +1833,50 @@ async function handleSwitchAccountWithEmail(context: vscode.ExtensionContext, em
         console.log('[Switch]   email:', email);
         console.log('[Switch]   password length:', password?.length);
         console.log('[Switch]   password:', password);
-        
+
         // Step 1: Firebase login, get idToken
-        const result = await loginWithFirebase(email, password);
+        let result = await loginWithFirebase(email, password);
+
+        // Step 2: If Firebase fails with INVALID_LOGIN_CREDENTIALS, try Windsurf API
+        if (!result.idToken && result.error === 'INVALID_LOGIN_CREDENTIALS') {
+            console.log('[Switch] Firebase login failed with INVALID_LOGIN_CREDENTIALS, trying Windsurf API...');
+            const windsurfResult = await loginWithWindsurfAPI(email, password);
+            if (windsurfResult.token) {
+                console.log('[Switch] Windsurf API login success, auth1_token length:', windsurfResult.token.length);
+                
+                // Get session token with prefix via WindsurfPostAuth
+                console.log('[Switch] Getting session token via WindsurfPostAuth...');
+                const sessionResult = await getWindsurfSessionToken(windsurfResult.token);
+                if (!sessionResult.sessionToken) {
+                    throw new Error(`WindsurfPostAuth failed: ${sessionResult.error || 'Unknown error'}`);
+                }
+                console.log('[Switch] Got session token (with prefix), length:', sessionResult.sessionToken.length);
+                
+                // Use session token with prefix for login
+                await logoutCurrent();
+                console.log('[Switch] Using session token for loginWithAuthToken...');
+                try {
+                    await vscode.commands.executeCommand('windsurf.loginWithAuthToken', sessionResult.sessionToken);
+                    console.log('[Switch] windsurf.loginWithAuthToken succeeded with session token');
+                    vscode.window.showInformationMessage(`已切换到：${email}`);
+                    return { success: true, email };
+                } catch (sessionError: any) {
+                    console.log('[Switch] Session token failed:', sessionError.message);
+                    throw sessionError;
+                }
+            } else {
+                throw new Error(`Windsurf login failed: ${windsurfResult.error || 'Unknown error'}`);
+            }
+        }
+
         if (!result.idToken) {
             throw new Error(`Firebase login failed: ${result.error || 'Unknown error'}`);
         }
+
         const idToken = result.idToken;
         console.log('[Switch] Firebase login success, token length:', idToken.length);
 
-        // Step 2: Use Firebase idToken directly with windsurf.loginWithAuthToken
-        // (same as codepool - it uses access_token which is Firebase ID token)
+        // Step 3: Use Firebase idToken directly with windsurf.loginWithAuthToken
         await logoutCurrent();
         await vscode.commands.executeCommand('windsurf.loginWithAuthToken', idToken);
         console.log('[Switch] windsurf.loginWithAuthToken succeeded');
@@ -2118,6 +2160,150 @@ async function writeTokenToStorageJson(apiKey: string, name: string, apiServerUr
         console.error('Failed to write storage:', e);
         return false;
     }
+}
+
+// Get auth token from Windsurf API using email/password
+async function loginWithWindsurfAPI(email: string, password: string): Promise<{ token: string | null; error?: string }> {
+    const https = require('https');
+
+    const loginData = JSON.stringify({
+        email: email,
+        password: password
+    });
+
+    const loginOptions = {
+        hostname: 'windsurf.com',
+        port: 443,
+        path: '/_devin-auth/password/login',
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Origin': 'https://windsurf.com',
+            'Referer': 'https://windsurf.com/'
+        }
+    };
+
+    return new Promise((resolve) => {
+        const loginReq = https.request(loginOptions, (loginRes: any) => {
+            let loginRespData = '';
+            loginRes.on('data', (chunk: string) => { loginRespData += chunk; });
+            loginRes.on('end', () => {
+                try {
+                    const loginJson = JSON.parse(loginRespData);
+                    const authToken = loginJson.token || loginJson.auth_token;
+                    if (authToken) {
+                        console.log('[WindsurfLogin] Got auth token, length:', authToken.length);
+                        resolve({ token: authToken });
+                    } else {
+                        console.error('[WindsurfLogin] No token in response:', loginJson);
+                        resolve({ token: null, error: loginJson.error || 'No token in response' });
+                    }
+                } catch (e) {
+                    console.error('[WindsurfLogin] Parse error:', e);
+                    resolve({ token: null, error: 'Failed to parse login response' });
+                }
+            });
+        });
+
+        loginReq.on('error', (e: Error) => {
+            console.error('[WindsurfLogin] Request error:', e);
+            resolve({ token: null, error: e.message });
+        });
+
+        loginReq.write(loginData);
+        loginReq.end();
+    });
+}
+
+// Get session token via gRPC-web WindsurfPostAuth
+async function getWindsurfSessionToken(auth1Token: string): Promise<{ sessionToken: string | null; error?: string }> {
+    const https = require('https');
+
+    // Build protobuf payload: message { string token = 1; }
+    // Field 1, wire type 2 (length-delimited)
+    const tag = Buffer.from([0x0a]); // (1 << 3) | 2 = 10
+    const tokenBytes = Buffer.from(auth1Token, 'utf-8');
+    const length = Buffer.from([tokenBytes.length]);
+    const protoPayload = Buffer.concat([tag, length, tokenBytes]);
+
+    // gRPC-web frame: flags (1 byte) + length (4 bytes big-endian) + payload
+    const flags = Buffer.from([0x00]); // uncompressed
+    const lengthBuf = Buffer.alloc(4);
+    lengthBuf.writeUInt32BE(protoPayload.length, 0);
+    const grpcFrame = Buffer.concat([flags, lengthBuf, protoPayload]);
+
+    const postAuthOptions = {
+        hostname: 'windsurf.com',
+        port: 443,
+        path: '/_backend/exa.seat_management_pb.SeatManagementService/WindsurfPostAuth',
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/grpc-web+proto',
+            'Accept': 'application/grpc-web+proto',
+            'X-Grpc-Web': '1',
+            'X-User-Agent': 'grpc-web-javascript/0.1',
+            'Origin': 'https://windsurf.com',
+            'Referer': 'https://windsurf.com/'
+        }
+    };
+
+    return new Promise((resolve) => {
+        const postReq = https.request(postAuthOptions, (postRes: any) => {
+            let respData: Buffer[] = [];
+            postRes.on('data', (chunk: Buffer) => { respData.push(chunk); });
+            postRes.on('end', () => {
+                try {
+                    const fullResponse = Buffer.concat(respData);
+
+                    if (postRes.statusCode !== 200) {
+                        console.error('[WindsurfPostAuth] HTTP error:', postRes.statusCode);
+                        resolve({ sessionToken: null, error: `HTTP ${postRes.statusCode}` });
+                        return;
+                    }
+
+                    // Parse gRPC-web response
+                    // Skip first 5 bytes (flags + length), extract devin-session-token
+                    if (fullResponse.length <= 5) {
+                        resolve({ sessionToken: null, error: 'Empty response' });
+                        return;
+                    }
+
+                    const bodyStart = 5;
+                    const body = fullResponse.slice(bodyStart);
+
+                    // Extract devin-session-token from response
+                    // Response format: devin-session-token${JWT}${more data}
+                    const responseStr = body.toString('utf-8');
+                    
+                    // IMPORTANT: Must include 'devin-session-token$' prefix!
+                    // Full format: devin-session-token$header.payload.signature
+                    const tokenMatch = responseStr.match(/(devin-session-token\$[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/);
+
+                    if (tokenMatch && tokenMatch[1]) {
+                        const sessionToken = tokenMatch[1];  // Full token with prefix
+                        console.log('[WindsurfPostAuth] Got session token (with prefix), length:', sessionToken.length);
+                        console.log('[WindsurfPostAuth] Token preview:', sessionToken.substring(0, 50) + '...');
+                        resolve({ sessionToken });
+                    } else {
+                        console.error('[WindsurfPostAuth] Could not extract session token from:', responseStr.substring(0, 300));
+                        resolve({ sessionToken: null, error: 'Failed to extract session token' });
+                    }
+                } catch (e: any) {
+                    console.error('[WindsurfPostAuth] Parse error:', e);
+                    resolve({ sessionToken: null, error: e.message });
+                }
+            });
+        });
+
+        postReq.on('error', (e: Error) => {
+            console.error('[WindsurfPostAuth] Request error:', e);
+            resolve({ sessionToken: null, error: e.message });
+        });
+
+        postReq.write(grpcFrame);
+        postReq.end();
+    });
 }
 
 // Get Firebase idToken from email/password

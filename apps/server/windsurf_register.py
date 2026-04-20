@@ -474,34 +474,51 @@ def register_windsurf():
         print("Opening Windsurf registration page...", flush=True)
         page.get("https://windsurf.com/account/register")
         
-        # Wait for form to load (fast detection)
+        # Wait for form to load (fast detection) - use flexible selectors
         start_step("waiting_for_form")
-        first_name_input = wait_for_element(page, 'css:input#firstName', timeout=5)
+        # Try multiple selectors for first name input
+        first_name_input = (
+            wait_for_element(page, 'css:input[autocomplete="given-name"]', timeout=5) or
+            wait_for_element(page, 'css:input[placeholder*="first name"]', timeout=1) or
+            wait_for_element(page, 'css:input[placeholder*="First name"]', timeout=1) or
+            wait_for_element(page, 'css:input#firstName', timeout=1)
+        )
         if not first_name_input:
-            raise Exception("Form not loaded - firstName input not found")
-        
+            raise Exception("Form not loaded - firstName input not found (tried multiple selectors)")
+
         # Step 3: Fill registration form
         start_step("filling_form")
         print("Filling registration form...", flush=True)
-        
+
         # First name
         if first_name_input:
             first_name_input.click()
             first_name_input.input("User", clear=True)
             print("Filled first name", flush=True)
-        
-        
-        # Last name
+
+
+        # Last name - try multiple selectors
         last_name = "Test" + ''.join(random.choices(string.ascii_lowercase, k=2))
-        last_name_input = page.ele('css:input#lastName') or page.ele('css:input[name="lastName"]')
+        last_name_input = (
+            page.ele('css:input[autocomplete="family-name"]') or
+            page.ele('css:input[placeholder*="last name"]') or
+            page.ele('css:input[placeholder*="Last name"]') or
+            page.ele('css:input#lastName') or
+            page.ele('css:input[name="lastName"]')
+        )
         if last_name_input:
             last_name_input.click()
             last_name_input.input(last_name, clear=True)
             print(f"Filled last name: {last_name}", flush=True)
-        
-        
-        # Email
-        email_input = page.ele('css:input#email') or page.ele('css:input[type="email"]')
+
+
+        # Email - try multiple selectors
+        email_input = (
+            page.ele('css:input[type="email"]') or
+            page.ele('css:input[name="email"]') or
+            page.ele('css:input[placeholder*="email"]') or
+            page.ele('css:input#email')
+        )
         if email_input:
             email_input.click()
             email_input.input(email, clear=True)
@@ -538,23 +555,34 @@ def register_windsurf():
         print("Setting password...", flush=True)
         password = generate_password()
         
-        # Retry loop for finding password input
+        # Retry loop for finding password input - try multiple selectors
         for _ in range(20):
-            password_input = page.ele('css:input[type="password"]', timeout=0.2)
+            password_input = (
+                page.ele('css:input[type="password"]', timeout=0.2) or
+                page.ele('css:input[autocomplete="new-password"]', timeout=0.1) or
+                page.ele('css:input[placeholder*="password"]', timeout=0.1) or
+                page.ele('css:input[placeholder*="Password"]', timeout=0.1)
+            )
             if password_input:
                 password_input.click()
                 password_input.input(password, clear=True)
                 print(f"Filled password: {password}", flush=True)
                 break
             time.sleep(0.05)
-        
-        
-        # Confirm password
-        confirm_input = page.ele('css:input[name="confirmPassword"]') or page.ele('css:input[placeholder*="Confirm"]')
+
+
+        # Confirm password - use specific selector from real DOM
+        confirm_input = (
+            page.ele('css:input[name="confirmPassword"]', timeout=1) or
+            page.ele('css:input[placeholder="Confirm password"]', timeout=0.5)
+        )
+
         if confirm_input:
             confirm_input.click()
             confirm_input.input(password, clear=True)
             print("Filled confirm password", flush=True)
+        else:
+            print("Warning: Could not find confirm password input", flush=True)
         
         
         # Submit password - click and wait for Cloudflare page or verification code page
@@ -696,14 +724,16 @@ def register_windsurf():
                 
                 # Always try to get apiKey after the loop
                 print(f"Loop ended, registration_success={registration_success}", flush=True)
-                
-                # Try to get apiKey regardless of registration_success flag
-                try:
-                    api_key, api_name = get_api_key_from_browser(page, email)
-                    if api_key:
-                        print(f"Successfully got apiKey! (length: {len(api_key)})", flush=True)
-                except Exception as api_e:
-                    print(f"Failed to get apiKey: {api_e}", flush=True)
+
+                # Temporarily skip Firebase token retrieval (TODO: fix Firebase IndexedDB access)
+                api_key = None
+                api_name = None
+                # try:
+                #     api_key, api_name = get_api_key_from_browser(page, email)
+                #     if api_key:
+                #         print(f"Successfully got apiKey! (length: {len(api_key)})", flush=True)
+                # except Exception as api_e:
+                #     print(f"Failed to get apiKey: {api_e}", flush=True)
                 
                 # Close browser
                 try:
