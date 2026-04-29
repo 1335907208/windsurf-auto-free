@@ -1,7 +1,7 @@
 {
   "name": "ide-toolkit",
-  "displayName": "IDE 工具箱",
-  "description": "开发环境辅助工具",
+  "displayName": "IDE Toolkit",
+  "description": "Development environment utilities",
   "version": "1.0.0",
   "publisher": "dev-utils",
   "engines": {
@@ -18,15 +18,23 @@
     "commands": [
       {
         "command": "ide-toolkit.openPanel",
-        "title": "打开账号管理器",
+        "title": "Open Account Manager",
         "icon": "$(person)"
+      },
+      {
+        "command": "ide-toolkit.refreshDevice",
+        "title": "Refresh Device ID"
+      },
+      {
+        "command": "ide-toolkit.patchWindsurf",
+        "title": "Patch Windsurf Extension"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "ide-toolkit",
-          "title": "账号管理器",
+          "title": "Account Manager",
           "icon": "$(person)"
         }
       ]
@@ -35,18 +43,18 @@
       "ide-toolkit": [
         {
           "id": "ide-toolkit.welcome",
-          "name": "账号管理器",
+          "name": "Account Manager",
           "type": "webview"
         }
       ]
     },
     "configuration": {
-      "title": "IDE 账号管理器",
+      "title": "IDE Account Manager",
       "properties": {
         "ideToolkit.backendUrl": {
           "type": "string",
           "default": "http://localhost:3001",
-          "description": "账号管理后端 API 地址"
+          "description": "Backend API URL for account management"
         }
       }
     }

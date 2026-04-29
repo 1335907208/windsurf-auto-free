@@ -331,8 +331,15 @@ class WindsurfRegisterService {
     return this.running
   }
 
-  async getAccounts() {
+  async getAccounts(status?: string) {
     return prisma.windsurfAccount.findMany({
+      where: {
+        ...(status && { status }),
+        OR: [
+          { password: { not: null } },
+          { apiKey: { not: null } },
+        ],
+      },
       orderBy: { registerAt: 'desc' },
       take: 100,
     })

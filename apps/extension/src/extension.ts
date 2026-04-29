@@ -576,9 +576,9 @@ vscode.postMessage({ command: 'getStats' });
         // If local cache is empty, try to fetch from backend
         if (allAccounts.length === 0) {
             try {
-                const result = await fetchFromBackend('/api/windsurf/accounts');
+                const result = await fetchFromBackend('/api/windsurf/accounts?status=success');
                 if (result.success && result.data && result.data.length > 0) {
-                    allAccounts = result.data;
+                    allAccounts = result.data.filter((a: AccountInfo) => a.password || a.apiKey);
                     // Update cache
                     await this.context.globalState.update('ide-toolkit.cachedAccounts', allAccounts);
                 }
@@ -788,10 +788,10 @@ class AccountViewProvider implements vscode.WebviewViewProvider {
         const cachedAccounts = this.context.globalState.get<AccountInfo[]>('ide-toolkit.cachedAccounts') || [];
         
         try {
-            const result = await fetchFromBackend('/api/windsurf/accounts');
+            const result = await fetchFromBackend('/api/windsurf/accounts?status=success');
             if (result.success && result.data) {
-                // Show all accounts in backend order (already sorted by registerAt desc)
-                const allAccounts = result.data;
+                // Show success accounts in backend order (already sorted by registerAt desc)
+                const allAccounts = result.data.filter((a: AccountInfo) => a.password || a.apiKey);
                 
                 // Update cache with new data
                 await this.context.globalState.update('ide-toolkit.cachedAccounts', allAccounts);
@@ -1288,9 +1288,9 @@ function openWebviewPanel(context: vscode.ExtensionContext) {
                     // Fetch from backend
                     const usedAccounts = context.globalState.get<Record<string, boolean>>('ide-toolkit.usedAccounts') || {};
                     try {
-                        const result = await fetchFromBackend('/api/windsurf/accounts');
+                        const result = await fetchFromBackend('/api/windsurf/accounts?status=success');
                         if (result.success && result.data) {
-                            const allAccounts = result.data;
+                            const allAccounts = result.data.filter((a: AccountInfo) => a.password || a.apiKey);
                             
                             // Update cache with new data (already sorted by registerAt desc)
                             await context.globalState.update('ide-toolkit.cachedAccounts', allAccounts);
@@ -1837,9 +1837,9 @@ async function handleSwitchAccountWithEmail(context: vscode.ExtensionContext, em
         // Step 1: Firebase login, get idToken
         let result = await loginWithFirebase(email, password);
 
-        // Step 2: If Firebase fails with INVALID_LOGIN_CREDENTIALS, try Windsurf API
-        if (!result.idToken && result.error === 'INVALID_LOGIN_CREDENTIALS') {
-            console.log('[Switch] Firebase login failed with INVALID_LOGIN_CREDENTIALS, trying Windsurf API...');
+        // Step 2: If Firebase fails, try Windsurf API
+        if (!result.idToken) {
+            console.log('[Switch] Firebase login failed:', result.error, 'trying Windsurf API...');
             const windsurfResult = await loginWithWindsurfAPI(email, password);
             if (windsurfResult.token) {
                 console.log('[Switch] Windsurf API login success, auth1_token length:', windsurfResult.token.length);

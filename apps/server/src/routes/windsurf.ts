@@ -91,7 +91,8 @@ export async function windsurfRoutes(fastify: FastifyInstance) {
   // Get accounts list
   fastify.get('/api/windsurf/accounts', async (request, reply) => {
     try {
-      const accounts = await windsurfRegisterService.getAccounts()
+      const { status } = request.query as { status?: string }
+      const accounts = await windsurfRegisterService.getAccounts(status)
 
       return {
         success: true,

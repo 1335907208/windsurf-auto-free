@@ -536,9 +536,9 @@ class AccountViewProvider implements vscode.WebviewViewProvider {
         const cachedAccounts = this.context.globalState.get<AccountInfo[]>('ide-toolkit.cachedAccounts') || [];
         
         try {
-            const result = await fetchFromBackend('/api/windsurf/accounts');
+            const result = await fetchFromBackend('/api/windsurf/accounts?status=success');
             if (result.success && result.data) {
-                // Show all accounts in backend order (already sorted by registerAt desc)
+                // Show success accounts in backend order (already sorted by registerAt desc)
                 const allAccounts = result.data;
                 
                 // Update cache with new data
@@ -1027,7 +1027,7 @@ function openWebviewPanel(context: vscode.ExtensionContext) {
                     // Fetch from backend
                     const usedAccounts = context.globalState.get<Record<string, boolean>>('ide-toolkit.usedAccounts') || {};
                     try {
-                        const result = await fetchFromBackend('/api/windsurf/accounts');
+                        const result = await fetchFromBackend('/api/windsurf/accounts?status=success');
                         if (result.success && result.data) {
                             const allAccounts = result.data;
                             
