@@ -1847,22 +1847,28 @@ async function handleSwitchAccountWithEmail(context: vscode.ExtensionContext, em
                 // Get session token with prefix via WindsurfPostAuth
                 console.log('[Switch] Getting session token via WindsurfPostAuth...');
                 const sessionResult = await getWindsurfSessionToken(windsurfResult.token);
-                if (!sessionResult.sessionToken) {
-                    throw new Error(`WindsurfPostAuth failed: ${sessionResult.error || 'Unknown error'}`);
-                }
-                console.log('[Switch] Got session token (with prefix), length:', sessionResult.sessionToken.length);
                 
-                // Use session token with prefix for login
+                let tokenToUse: string;
+                if (sessionResult.sessionToken) {
+                    console.log('[Switch] Got session token (with prefix), length:', sessionResult.sessionToken.length);
+                    tokenToUse = sessionResult.sessionToken;
+                } else {
+                    // WindsurfPostAuth failed, try auth1_token directly
+                    console.log('[Switch] WindsurfPostAuth failed:', sessionResult.error, 'trying auth1_token directly...');
+                    tokenToUse = windsurfResult.token;
+                }
+                
+                // Use token for login
                 await logoutCurrent();
-                console.log('[Switch] Using session token for loginWithAuthToken...');
+                console.log('[Switch] Using token for loginWithAuthToken...');
                 try {
-                    await vscode.commands.executeCommand('windsurf.loginWithAuthToken', sessionResult.sessionToken);
-                    console.log('[Switch] windsurf.loginWithAuthToken succeeded with session token');
+                    await vscode.commands.executeCommand('windsurf.loginWithAuthToken', tokenToUse);
+                    console.log('[Switch] windsurf.loginWithAuthToken succeeded');
                     vscode.window.showInformationMessage(`已切换到：${email}`);
                     return { success: true, email };
-                } catch (sessionError: any) {
-                    console.log('[Switch] Session token failed:', sessionError.message);
-                    throw sessionError;
+                } catch (loginError: any) {
+                    console.log('[Switch] loginWithAuthToken failed:', loginError.message);
+                    throw loginError;
                 }
             } else {
                 throw new Error(`Windsurf login failed: ${windsurfResult.error || 'Unknown error'}`);
@@ -2224,7 +2230,15 @@ async function getWindsurfSessionToken(auth1Token: string): Promise<{ sessionTok
     // Field 1, wire type 2 (length-delimited)
     const tag = Buffer.from([0x0a]); // (1 << 3) | 2 = 10
     const tokenBytes = Buffer.from(auth1Token, 'utf-8');
-    const length = Buffer.from([tokenBytes.length]);
+    // Protobuf varint encoding for length (supports > 127 bytes)
+    const varintBuf: number[] = [];
+    let len = tokenBytes.length;
+    while (len > 0x7f) {
+        varintBuf.push((len & 0x7f) | 0x80);
+        len >>>= 7;
+    }
+    varintBuf.push(len);
+    const length = Buffer.from(varintBuf);
     const protoPayload = Buffer.concat([tag, length, tokenBytes]);
 
     // gRPC-web frame: flags (1 byte) + length (4 bytes big-endian) + payload
@@ -2243,6 +2257,7 @@ async function getWindsurfSessionToken(auth1Token: string): Promise<{ sessionTok
             'Accept': 'application/grpc-web+proto',
             'X-Grpc-Web': '1',
             'X-User-Agent': 'grpc-web-javascript/0.1',
+            'X-Devin-Auth1-Token': auth1Token,
             'Origin': 'https://windsurf.com',
             'Referer': 'https://windsurf.com/'
         }
